@@ -2,7 +2,7 @@
 // @name         Web Connect - Website Connectivity Monitor
 // @name:zh-CN   Web Connect - 网页连通性监测
 // @namespace    https://github.com/Moloch0/web_connect
-// @version      0.1.0
+// @version      0.2.0
 // @description  Monitor the current website, pause in background tabs, and keep local connectivity history.
 // @description:zh-CN 按网站开启连通性监测，后台自动休眠，并在本地记录历史结果。
 // @author       Moloch0
@@ -28,13 +28,15 @@
   if (global.__webConnectInjected) return;
   global.__webConnectInjected = true;
 
-  const VERSION = "0.1.0";
+  const VERSION = "0.2.0";
   const ROOT_ID = "web-connect-root";
   const STORE_KEY = "web-connect.sites.v1";
   const DEFAULT_INTERVAL_MS = 5000;
   const REQUEST_TIMEOUT_MS = 5000;
-  const MAX_HISTORY = 500;
-  const RECENT_ROWS = 30;
+  const HISTORY_RETENTION_MS = 60 * 60 * 1000;
+  const MIN_CHART_SPAN_MS = 60 * 1000;
+  const MAX_HISTORY = 1000;
+  const RECENT_ROWS = 20;
   const siteKey = global.location.origin;
   const targetUrl = `${siteKey}/`;
 
@@ -50,7 +52,14 @@
   let launcher;
   let controls;
 
-  function normalizeSite(value) {
+  function pruneHistory(value, now = Date.now()) {
+    const cutoff = now - HISTORY_RETENTION_MS;
+    return (Array.isArray(value) ? value : [])
+      .filter((item) => item && Number.isFinite(Number(item.at)) && Number(item.at) >= cutoff && Number(item.at) <= now + 60000)
+      .slice(-MAX_HISTORY);
+  }
+
+  function normalizeSite(value, now = Date.now()) {
     const input = value && typeof value === "object" ? value : {};
     return {
       enabled: input.enabled === true,
@@ -58,7 +67,7 @@
       intervalMs: [5000, 10000, 30000, 60000].includes(input.intervalMs)
         ? input.intervalMs
         : DEFAULT_INTERVAL_MS,
-      history: Array.isArray(input.history) ? input.history.slice(-MAX_HISTORY) : [],
+      history: pruneHistory(input.history, now),
     };
   }
 
@@ -66,13 +75,19 @@
     try {
       const value = GM_getValue(STORE_KEY, "{}");
       const parsed = typeof value === "string" ? JSON.parse(value) : value;
-      return parsed && typeof parsed === "object" ? parsed : {};
+      if (!parsed || typeof parsed !== "object") return {};
+      const now = Date.now();
+      const cleaned = {};
+      for (const [key, item] of Object.entries(parsed)) cleaned[key] = normalizeSite(item, now);
+      GM_setValue(STORE_KEY, JSON.stringify(cleaned));
+      return cleaned;
     } catch (_) {
       return {};
     }
   }
 
   function saveSite() {
+    site.history = pruneHistory(site.history);
     store[siteKey] = site;
     try {
       GM_setValue(STORE_KEY, JSON.stringify(store));
@@ -144,7 +159,7 @@
     lastResult = result;
     failures = result.ok ? 0 : failures + 1;
     site.history.push(result);
-    if (site.history.length > MAX_HISTORY) site.history.splice(0, site.history.length - MAX_HISTORY);
+    site.history = pruneHistory(site.history, result.at);
     saveSite();
     render();
   }
@@ -263,6 +278,10 @@
 #${ROOT_ID} .wc-note{color:var(--wc-muted);font-size:12px;margin:8px 0}
 #${ROOT_ID} .wc-summary{display:grid;grid-template-columns:repeat(3,1fr);margin:12px 0 8px;border-top:1px solid var(--wc-border);padding-top:12px}
 #${ROOT_ID} .wc-stat{text-align:center}#${ROOT_ID} .wc-stat strong{display:block;font-size:15px}#${ROOT_ID} .wc-stat span{color:var(--wc-muted);font-size:11px}
+#${ROOT_ID} .wc-chart-head{display:flex;align-items:baseline;justify-content:space-between;margin:12px 0 4px;font-weight:650}#${ROOT_ID} .wc-chart-range{color:var(--wc-muted);font-size:11px;font-weight:400}
+#${ROOT_ID} .wc-chart{display:block;width:100%;height:auto;aspect-ratio:2/1;overflow:visible}#${ROOT_ID} .wc-chart-frame,#${ROOT_ID} .wc-chart-grid{fill:none;stroke:var(--wc-border);vector-effect:non-scaling-stroke}#${ROOT_ID} .wc-chart-grid{stroke-opacity:.65}
+#${ROOT_ID} .wc-chart-axis{fill:var(--wc-muted);font:10px/1 system-ui,-apple-system,"Segoe UI",sans-serif}#${ROOT_ID} .wc-chart-axis-title{fill:var(--wc-fg);font:10px/1 system-ui,-apple-system,"Segoe UI",sans-serif}
+#${ROOT_ID} .wc-chart-line{fill:none;stroke:var(--wc-green);stroke-width:2;stroke-linecap:round;stroke-linejoin:round;vector-effect:non-scaling-stroke}#${ROOT_ID} .wc-chart-point{fill:var(--wc-green)}#${ROOT_ID} .wc-chart-offline{fill:var(--wc-red)}#${ROOT_ID} .wc-chart-empty{fill:var(--wc-muted);font:12px/1 system-ui,-apple-system,"Segoe UI",sans-serif}
 #${ROOT_ID} .wc-history-head{display:flex;align-items:center;justify-content:space-between;margin:8px 0 5px;font-weight:650}#${ROOT_ID} .wc-clear{padding:4px 7px;font-size:11px}
 #${ROOT_ID} .wc-history{display:grid;gap:3px;max-height:220px;overflow:auto}#${ROOT_ID} .wc-row{display:grid;grid-template-columns:74px 52px minmax(0,1fr);gap:7px;padding:5px 3px;border-bottom:1px solid var(--wc-border);font-size:11px}
 #${ROOT_ID} .wc-ok{color:var(--wc-green);font-weight:700}#${ROOT_ID} .wc-bad{color:var(--wc-red);font-weight:700}#${ROOT_ID} .wc-detail{overflow-wrap:anywhere;color:var(--wc-muted)}
@@ -316,6 +335,14 @@
     intervalLabel.append(intervalText, interval);
 
     const note = element("p", "wc-note", "默认只在此网站、当前标签页可见时运行。关闭标签页后无法继续监测。");
+    const chartHead = element("div", "wc-chart-head");
+    const chartRange = element("span", "wc-chart-range");
+    chartHead.append(element("span", "", "延迟走势"), chartRange);
+    const chart = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    chart.classList.add("wc-chart");
+    chart.setAttribute("viewBox", "0 0 332 166");
+    chart.setAttribute("role", "img");
+    chart.setAttribute("aria-label", "最近一小时网站连接延迟走势图");
     const summary = element("div", "wc-summary");
     const rate = element("div", "wc-stat");
     const rateValue = element("strong");
@@ -332,7 +359,7 @@
     historyHead.append(element("span", "", "最近记录"), button("清空", "clear", "wc-clear"));
     const history = element("div", "wc-history");
 
-    panel.append(header, siteName, status, actions, forceLabel, intervalLabel, note, summary, historyHead, history);
+    panel.append(header, siteName, status, actions, forceLabel, intervalLabel, note, chartHead, chart, summary, historyHead, history);
     controls = {
       statusMode,
       statusLine,
@@ -341,6 +368,8 @@
       checkNow,
       force,
       interval,
+      chart,
+      chartRange,
       rateValue,
       averageValue,
       failureValue,
@@ -360,6 +389,150 @@
         applyRuntimeState(false);
       }
     });
+  }
+
+  function svgElement(tag, attributes = {}, text = "") {
+    const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const [name, value] of Object.entries(attributes)) node.setAttribute(name, String(value));
+    if (text) node.textContent = text;
+    return node;
+  }
+
+  function chartTime(value) {
+    return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function chartSpanLabel(span) {
+    const minutes = Math.max(1, Math.round(span / 60000));
+    return minutes >= 60 ? "最近 1 小时" : `最近 ${minutes} 分钟`;
+  }
+
+  function renderChart() {
+    if (!controls) return;
+    const width = 332;
+    const height = 166;
+    const margin = { top: 10, right: 8, bottom: 38, left: 42 };
+    const plotWidth = width - margin.left - margin.right;
+    const plotHeight = height - margin.top - margin.bottom;
+    const now = Date.now();
+    site.history = pruneHistory(site.history, now);
+    const firstAt = site.history[0]?.at || now;
+    const span = Math.min(HISTORY_RETENTION_MS, Math.max(MIN_CHART_SPAN_MS, now - firstAt));
+    const start = now - span;
+    const visible = site.history.filter((item) => item.at >= start && item.at <= now);
+    const online = visible.filter((item) => item.ok && Number.isFinite(Number(item.latency)));
+    const maxLatency = online.length ? Math.max(...online.map((item) => Number(item.latency))) : 0;
+    const yMax = Math.max(100, Math.ceil((maxLatency * 1.15) / 100) * 100);
+    const x = (at) => margin.left + ((at - start) / span) * plotWidth;
+    const y = (latency) => margin.top + plotHeight - (Math.min(latency, yMax) / yMax) * plotHeight;
+    const fragment = document.createDocumentFragment();
+
+    fragment.append(svgElement("rect", {
+      x: margin.left,
+      y: margin.top,
+      width: plotWidth,
+      height: plotHeight,
+      class: "wc-chart-frame",
+    }));
+
+    for (let index = 0; index <= 2; index += 1) {
+      const value = Math.round((yMax / 2) * index);
+      const position = y(value);
+      fragment.append(svgElement("line", {
+        x1: margin.left,
+        y1: position,
+        x2: margin.left + plotWidth,
+        y2: position,
+        class: "wc-chart-grid",
+      }));
+      fragment.append(svgElement("text", {
+        x: margin.left - 6,
+        y: position + 3,
+        "text-anchor": "end",
+        class: "wc-chart-axis",
+      }, String(value)));
+    }
+
+    for (let index = 0; index <= 2; index += 1) {
+      const at = start + (span / 2) * index;
+      const position = x(at);
+      fragment.append(svgElement("line", {
+        x1: position,
+        y1: margin.top,
+        x2: position,
+        y2: margin.top + plotHeight,
+        class: "wc-chart-grid",
+      }));
+      fragment.append(svgElement("text", {
+        x: position,
+        y: height - 10,
+        "text-anchor": index === 0 ? "start" : index === 2 ? "end" : "middle",
+        class: "wc-chart-axis",
+      }, chartTime(at)));
+    }
+
+    fragment.append(svgElement("text", {
+      x: 8,
+      y: margin.top + plotHeight / 2,
+      transform: `rotate(-90 8 ${margin.top + plotHeight / 2})`,
+      "text-anchor": "middle",
+      class: "wc-chart-axis-title",
+    }, "延迟 ms"));
+    fragment.append(svgElement("text", {
+      x: margin.left + plotWidth / 2,
+      y: height - 1,
+      "text-anchor": "middle",
+      class: "wc-chart-axis-title",
+    }, "时间"));
+
+    let segment = [];
+    const flushSegment = () => {
+      if (!segment.length) return;
+      if (segment.length === 1) {
+        fragment.append(svgElement("circle", {
+          cx: x(segment[0].at),
+          cy: y(segment[0].latency),
+          r: 2.5,
+          class: "wc-chart-point",
+        }));
+      } else {
+        fragment.append(svgElement("polyline", {
+          points: segment.map((item) => `${x(item.at).toFixed(2)},${y(item.latency).toFixed(2)}`).join(" "),
+          class: "wc-chart-line",
+        }));
+      }
+      segment = [];
+    };
+
+    for (const item of visible) {
+      if (item.ok && Number.isFinite(Number(item.latency))) {
+        segment.push({ at: Number(item.at), latency: Number(item.latency) });
+      } else {
+        flushSegment();
+        fragment.append(svgElement("circle", {
+          cx: x(item.at),
+          cy: margin.top + plotHeight - 3,
+          r: 3,
+          class: "wc-chart-offline",
+        }));
+      }
+    }
+    flushSegment();
+
+    if (!visible.length) {
+      fragment.append(svgElement("text", {
+        x: margin.left + plotWidth / 2,
+        y: margin.top + plotHeight / 2,
+        "text-anchor": "middle",
+        class: "wc-chart-empty",
+      }, "开启监测后显示延迟走势"));
+    }
+
+    controls.chart.replaceChildren(fragment);
+    controls.chartRange.textContent = chartSpanLabel(span);
+    controls.chart.setAttribute("aria-label", visible.length
+      ? `${chartSpanLabel(span)}，${visible.length} 次检测，纵轴最大 ${yMax} 毫秒`
+      : "尚无连接延迟记录");
   }
 
   function renderHistory() {
@@ -405,6 +578,7 @@
     controls.rateValue.textContent = stats.total ? `${stats.rate}%` : "--";
     controls.averageValue.textContent = stats.online ? `${stats.avg} ms` : "--";
     controls.failureValue.textContent = String(stats.offline);
+    renderChart();
     renderHistory();
   }
 

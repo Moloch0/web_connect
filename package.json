@@ -1,0 +1,10 @@
+{
+  "name": "web-connect",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Per-site connectivity monitor userscript",
+  "license": "GPL-3.0-or-later",
+  "scripts": {
+    "publish": "powershell -ExecutionPolicy Bypass -File ./publish.ps1"
+  }
+}

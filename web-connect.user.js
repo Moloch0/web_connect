@@ -2,7 +2,7 @@
 // @name         Web Connect - Website Connectivity Monitor
 // @name:zh-CN   Web Connect - 网页连通性监测
 // @namespace    https://github.com/Moloch0/web_connect
-// @version      0.2.0
+// @version      0.3.0
 // @description  Monitor the current website, pause in background tabs, and keep local connectivity history.
 // @description:zh-CN 按网站开启连通性监测，后台自动休眠，并在本地记录历史结果。
 // @author       Moloch0
@@ -28,9 +28,10 @@
   if (global.__webConnectInjected) return;
   global.__webConnectInjected = true;
 
-  const VERSION = "0.2.0";
+  const VERSION = "0.3.0";
   const ROOT_ID = "web-connect-root";
   const STORE_KEY = "web-connect.sites.v1";
+  const POSITION_KEY = "web-connect.position.v1";
   const DEFAULT_INTERVAL_MS = 5000;
   const REQUEST_TIMEOUT_MS = 5000;
   const HISTORY_RETENTION_MS = 60 * 60 * 1000;
@@ -51,6 +52,7 @@
   let panel;
   let launcher;
   let controls;
+  let suppressLauncherClick = false;
 
   function pruneHistory(value, now = Date.now()) {
     const cutoff = now - HISTORY_RETENTION_MS;
@@ -108,6 +110,98 @@
     node.type = "button";
     node.dataset.action = action;
     return node;
+  }
+
+  function clamp(value, minimum, maximum) {
+    return Math.min(Math.max(value, minimum), Math.max(minimum, maximum));
+  }
+
+  function setRootPosition(left, top, persist = false) {
+    if (!root || !launcher) return;
+    const rect = launcher.getBoundingClientRect();
+    const margin = 8;
+    const nextLeft = clamp(Number(left) || 0, margin, global.innerWidth - rect.width - margin);
+    const nextTop = clamp(Number(top) || 0, margin, global.innerHeight - rect.height - margin);
+    Object.assign(root.style, {
+      left: `${Math.round(nextLeft)}px`,
+      top: `${Math.round(nextTop)}px`,
+      right: "auto",
+      bottom: "auto",
+      transform: "none",
+    });
+    if (persist) {
+      try { GM_setValue(POSITION_KEY, JSON.stringify({ left: nextLeft, top: nextTop })); } catch (_) { /* Persistence is optional. */ }
+    }
+  }
+
+  function restoreRootPosition() {
+    try {
+      const value = GM_getValue(POSITION_KEY, "null");
+      const saved = typeof value === "string" ? JSON.parse(value) : value;
+      if (saved && Number.isFinite(Number(saved.left)) && Number.isFinite(Number(saved.top))) {
+        setRootPosition(Number(saved.left), Number(saved.top));
+      }
+    } catch (_) {
+      // Keep the default corner when a saved position is unavailable.
+    }
+  }
+
+  function positionPanel() {
+    if (!panel || panel.hidden || !launcher) return;
+    const margin = 8;
+    const gap = 8;
+    const launcherRect = launcher.getBoundingClientRect();
+    const panelRect = panel.getBoundingClientRect();
+    let left = launcherRect.right - panelRect.width;
+    if (left < margin) left = launcherRect.left;
+    left = clamp(left, margin, global.innerWidth - panelRect.width - margin);
+    let top = launcherRect.top - panelRect.height - gap;
+    if (top < margin) top = launcherRect.bottom + gap;
+    top = clamp(top, margin, global.innerHeight - panelRect.height - margin);
+    Object.assign(panel.style, {
+      position: "fixed",
+      left: `${Math.round(left)}px`,
+      top: `${Math.round(top)}px`,
+      right: "auto",
+      bottom: "auto",
+      transform: "none",
+    });
+  }
+
+  function makeDraggable(handle) {
+    handle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || event.isPrimary === false) return;
+      if (handle !== launcher && event.target.closest("button, input, select, a")) return;
+      const launcherRect = launcher.getBoundingClientRect();
+      const start = { x: event.clientX, y: event.clientY, left: launcherRect.left, top: launcherRect.top };
+      let moved = false;
+      handle.setPointerCapture?.(event.pointerId);
+      const move = (moveEvent) => {
+        const dx = moveEvent.clientX - start.x;
+        const dy = moveEvent.clientY - start.y;
+        if (!moved && Math.hypot(dx, dy) < 4) return;
+        moved = true;
+        moveEvent.preventDefault();
+        root.classList.add("is-dragging");
+        setRootPosition(start.left + dx, start.top + dy);
+        positionPanel();
+      };
+      const finish = (finishEvent) => {
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", finish);
+        handle.removeEventListener("pointercancel", finish);
+        handle.releasePointerCapture?.(finishEvent.pointerId);
+        root.classList.remove("is-dragging");
+        if (!moved) return;
+        const current = launcher.getBoundingClientRect();
+        setRootPosition(current.left, current.top, true);
+        suppressLauncherClick = true;
+        global.setTimeout(() => { suppressLauncherClick = false; }, 0);
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", finish);
+      handle.addEventListener("pointercancel", finish);
+    });
   }
 
   function currentMode() {
@@ -261,13 +355,14 @@
 #${ROOT_ID} button,#${ROOT_ID} select{font:inherit;color:inherit;border:1px solid var(--wc-border);background:var(--wc-control);border-radius:6px}
 #${ROOT_ID} button{cursor:pointer;padding:7px 10px}#${ROOT_ID} button:disabled{cursor:default;opacity:.5}
 #${ROOT_ID} :focus-visible{outline:2px solid currentColor;outline-offset:2px}
-#${ROOT_ID} .wc-launcher{display:flex;align-items:center;gap:7px;min-height:36px;background:var(--wc-bg);box-shadow:0 2px 10px #0002;font-weight:650}
+#${ROOT_ID} .wc-launcher{display:flex;align-items:center;gap:7px;min-height:36px;background:var(--wc-bg);box-shadow:0 2px 10px #0002;font-weight:650;cursor:grab;touch-action:none;user-select:none}
 #${ROOT_ID} .wc-dot{width:9px;height:9px;border-radius:50%;background:var(--wc-muted);flex:none}
 #${ROOT_ID}[data-mode=active] .wc-dot{background:var(--wc-green)}#${ROOT_ID}[data-mode=sleeping] .wc-dot{background:var(--wc-amber)}
 #${ROOT_ID}[data-result=offline][data-mode=active] .wc-dot{background:var(--wc-red)}
 #${ROOT_ID} .wc-panel{position:absolute;right:0;bottom:44px;width:min(360px,calc(100vw - 24px));max-height:calc(100dvh - 76px);overflow:auto;padding:14px;border:1px solid var(--wc-border);border-radius:8px;background:var(--wc-bg);box-shadow:0 7px 24px #0003}
 #${ROOT_ID} .wc-panel[hidden]{display:none!important}#${ROOT_ID} .wc-header,#${ROOT_ID} .wc-actions,#${ROOT_ID} .wc-summary{display:flex;align-items:center;gap:8px}
-#${ROOT_ID} .wc-header{justify-content:space-between;margin-bottom:10px}#${ROOT_ID} .wc-title{font-size:15px;font-weight:700}#${ROOT_ID} .wc-version{margin-left:6px;color:var(--wc-muted);font-size:11px;font-weight:400}
+#${ROOT_ID} .wc-header{justify-content:space-between;margin-bottom:10px;cursor:grab;touch-action:none;user-select:none}#${ROOT_ID} .wc-title{font-size:15px;font-weight:700}#${ROOT_ID} .wc-version{margin-left:6px;color:var(--wc-muted);font-size:11px;font-weight:400}
+#${ROOT_ID}.is-dragging .wc-launcher,#${ROOT_ID}.is-dragging .wc-header{cursor:grabbing}
 #${ROOT_ID} .wc-close{border:0;background:transparent;padding:2px 6px;font-size:20px;line-height:1}
 #${ROOT_ID} .wc-site{overflow-wrap:anywhere;color:var(--wc-muted);font-size:12px;margin-bottom:12px}
 #${ROOT_ID} .wc-status{padding:10px;border:1px solid var(--wc-border);border-radius:6px;background:var(--wc-control)}
@@ -376,6 +471,7 @@
       history,
     };
     root.append(panel);
+    makeDraggable(header);
 
     panel.addEventListener("change", (event) => {
       if (event.target === force) {
@@ -587,6 +683,7 @@
     panel.hidden = false;
     launcher.setAttribute("aria-expanded", "true");
     render();
+    positionPanel();
     controls.toggle.focus({ preventScroll: true });
   }
 
@@ -608,10 +705,13 @@
     launcher.append(element("span", "wc-dot"), element("span", "wc-label", "网络监测：已关闭"));
     root.append(launcher);
     document.body.append(root);
+    makeDraggable(launcher);
+    restoreRootPosition();
 
     root.addEventListener("click", (event) => {
       const action = event.target.closest?.("button[data-action]")?.dataset.action;
       if (action === "open") {
+        if (suppressLauncherClick) { event.preventDefault(); return; }
         if (panel && !panel.hidden) closePanel();
         else openPanel();
       } else if (action === "close") {
@@ -639,6 +739,11 @@
       if (event.key === "Escape" && panel && !panel.hidden) closePanel();
     });
     document.addEventListener("visibilitychange", () => applyRuntimeState(!document.hidden));
+    global.addEventListener("resize", () => {
+      const current = launcher.getBoundingClientRect();
+      setRootPosition(current.left, current.top, true);
+      positionPanel();
+    });
     global.addEventListener("pagehide", stopScheduler, { once: true });
 
     try {

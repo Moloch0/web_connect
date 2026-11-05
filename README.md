@@ -13,6 +13,7 @@
 - 时间范围逐步扩展，达到 1 小时后固定为最近 1 小时滚动窗口。
 - 自动清理 1 小时以前的检测记录，并展示在线率、平均延迟和失败次数。
 - 设置和历史由用户脚本管理器保存在本地，不上传到第三方服务。
+- 浮动入口和面板标题栏都可拖拽，位置会跨网站保存并在下次打开时恢复。
 
 脚本通过请求当前网站根地址判断连通性。HTTP 200-499 视为在线，HTTP 500 及以上、网络错误和超时视为离线。
 
@@ -36,17 +37,17 @@
 
 仓库根目录的 `web-connect.user.js` 是唯一安装入口，不需要构建步骤。
 
-发布新版本时：
+双击 `publish.cmd` 即可发布。脚本会自动同步 `package.json`、userscript 头部和脚本内 `VERSION`，补齐缺失的 Changelog 条目，提交并推送到 `main`，等待 GitHub Raw 返回新版本后打开安装地址。
 
-1. 同步更新 `web-connect.user.js` 头部、脚本内 `VERSION` 和 `package.json` 中的版本号。
-2. 更新 `CHANGELOG.md`。
-3. 双击 `publish.cmd`，或在 PowerShell 中运行：
+如果当前版本与上一次提交相同，发布脚本会自动递增补丁版本；如果已经手动修改为更高版本，则保留手动版本。浏览器扩展通常仍会要求在更新页面最后确认一次“更新/安装”，这是 Tampermonkey/Violentmonkey 的安全机制。
+
+也可以在 PowerShell 中运行：
 
 ```powershell
 .\publish.ps1
 ```
 
-发布脚本会检查版本号、初始化 Git、提交当前目录并推送到 `main`。首次发布时，如果尚未配置远端且本机已登录 GitHub CLI，脚本会创建公开仓库 `Moloch0/web_connect`；否则会提示先配置 `origin`。
+在上级 `proj_center` 目录双击 `publish-all.cmd`，可以依次发布两个插件。首次发布时，如果尚未配置远端且本机已登录 GitHub CLI，脚本会创建对应的公开仓库；否则会提示先配置 `origin`。
 
 ## 权限说明
 
